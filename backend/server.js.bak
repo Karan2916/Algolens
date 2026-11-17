@@ -1,0 +1,589 @@
+require("dotenv").config();
+
+const express = require("express");
+const OpenAI = require("openai");
+const cors = require("cors");
+
+const app = express();
+
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
+
+const client = new OpenAI({
+  baseURL: "https://algolens-foundry.services.ai.azure.com/openai/v1",
+  apiKey: process.env.AZURE_AI_API_KEY,
+});
+
+const MODEL_NAME = "gpt-4.1-mini";
+const PORT = 3001;
+
+const ALLOWED_VISUALIZATION_TYPES = new Set([
+  "array",
+  "array_hashmap",
+  "hashmap",
+  "two_pointers",
+  "sliding_window",
+  "binary_search",
+  "linked_list",
+  "stack",
+  "queue",
+  "graph",
+  "graph_traversal",
+  "tree",
+  "tree_traversal",
+  "dynamic_programming",
+  "sorting",
+  "backtracking",
+  "heap",
+  "generic",
+]);
+
+app.get("/", (_req, res) => {
+  res.send("AlgoLens AI backend is running!");
+});
+
+// Test Azure AI connectivity.
+app.get("/test-ai", async (_req, res) => {
+  try {
+    const response = await client.responses.create({
+      model: MODEL_NAME,
+      input:
+        "Explain why binary search has O(log n) time complexity in two sentences.",
+    });
+
+    res.json({ answer: response.output_text });
+  } catch (error) {
+    console.error(
+      "Azure AI request failed:",
+      error.status,
+      error.message
+    );
+
+    res.status(500).json({
+      error: "Azure AI request failed. Check the backend terminal.",
+    });
+  }
+});
+
+// Basic object validation.
+function isObject(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+// Validate the generic visualization state.
+function isVisualizationState(state) {
+  if (!isObject(state)) return false;
+
+  const arrayFields = [
+    "arrays",
+    "maps",
+    "graphs",
+    "linearStructures",
+    "trees",
+    "tables",
+    "variables",
+  ];
+
+  for (const field of arrayFields) {
+    if (
+      state[field] !== undefined &&
+      !Array.isArray(state[field])
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    state.arrays &&
+    !state.arrays.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.name === "string" &&
+        Array.isArray(item.values)
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    state.maps &&
+    !state.maps.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.name === "string" &&
+        isObject(item.entries)
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    state.graphs &&
+    !state.graphs.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.name === "string" &&
+        Array.isArray(item.nodes) &&
+        Array.isArray(item.edges) &&
+        item.nodes.every(
+          (node) =>
+            isObject(node) &&
+            typeof node.id === "string" &&
+            typeof node.label === "string"
+        ) &&
+        item.edges.every(
+          (edge) =>
+            isObject(edge) &&
+            typeof edge.from === "string" &&
+            typeof edge.to === "string"
+        )
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    state.linearStructures &&
+    !state.linearStructures.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.name === "string" &&
+        ["stack", "queue"].includes(item.kind) &&
+        Array.isArray(item.items)
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    state.trees &&
+    !state.trees.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.name === "string" &&
+        Array.isArray(item.nodes) &&
+        item.nodes.every(
+          (node) =>
+            isObject(node) &&
+            typeof node.id === "string" &&
+            typeof node.label === "string"
+        )
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    state.tables &&
+    !state.tables.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.name === "string" &&
+        Array.isArray(item.values) &&
+        item.values.every(Array.isArray)
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    state.variables &&
+    !state.variables.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.name === "string" &&
+        typeof item.role === "string"
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+// Validate the generated visualization plan.
+function isVisualizationPlan(plan) {
+  if (
+    !isObject(plan) ||
+    typeof plan.type !== "string" ||
+    !ALLOWED_VISUALIZATION_TYPES.has(plan.type) ||
+    typeof plan.title !== "string" ||
+    typeof plan.reason !== "string" ||
+    !isVisualizationState(plan.initialState) ||
+    !Array.isArray(plan.steps) ||
+    plan.steps.length === 0
+  ) {
+    return false;
+  }
+
+  return plan.steps.every(
+    (step) =>
+      isObject(step) &&
+      typeof step.message === "string" &&
+      isVisualizationState(step.state) &&
+      (
+        step.operation === undefined ||
+        typeof step.operation === "string"
+      ) &&
+      (
+        step.line === undefined ||
+        (
+          typeof step.line === "number" &&
+          Number.isFinite(step.line)
+        )
+      )
+  );
+}
+
+// Analyze code and generate a generic visualization plan.
+app.post("/analyze", async (req, res) => {
+  const { code, model, problem } = req.body;
+
+  if (typeof code !== "string" || !code.trim()) {
+    return res.status(400).json({
+      error: "Please provide source code as a non-empty string.",
+    });
+  }
+
+  if (code.length > 100_000) {
+    return res.status(413).json({
+      error: "Source code is too large to analyze.",
+    });
+  }
+
+  try {
+    console.log("Received analysis request");
+
+    console.log(
+      problem
+        ? `Problem: ${problem.title || "Title unavailable"}`
+        : "No problem statement provided"
+    );
+
+    const prompt = `
+You are AlgoLens, an intelligent algorithm-analysis and
+visualization-planning agent.
+
+Your job is to understand the user's actual source code and create
+a structured visualization plan that a generic frontend renderer
+can display.
+
+Analyze:
+1. The algorithm and its variant.
+2. The techniques and data structures used.
+3. Time and auxiliary space complexity.
+4. The most appropriate visualization type.
+5. The state of the algorithm before visualization starts.
+6. Ordered state changes that explain the algorithm step by step.
+
+Use the problem statement, source code, and structured code model
+together. Do not assume the code correctly solves the problem.
+
+Return ONLY valid JSON with this structure:
+
+{
+  "algorithm": "string",
+  "variant": "string",
+  "confidence": 0.0,
+  "explanation": "string",
+  "techniques": ["string"],
+  "dataStructures": [
+    {
+      "name": "string",
+      "type": "string",
+      "role": "string"
+    }
+  ],
+  "complexity": {
+    "time": "string",
+    "space": "string"
+  },
+  "visualizationType": "string",
+  "visualizationReason": "string",
+  "variablesToTrack": [
+    {
+      "name": "string",
+      "role": "string"
+    }
+  ],
+  "visualizationPlan": {
+    "type": "string",
+    "title": "string",
+    "reason": "string",
+    "initialState": {
+      "arrays": [],
+      "maps": [],
+      "graphs": [],
+      "linearStructures": [],
+      "trees": [],
+      "tables": [],
+      "variables": []
+    },
+    "steps": [
+      {
+        "message": "string",
+        "operation": "string",
+        "state": {
+          "arrays": [],
+          "maps": [],
+          "graphs": [],
+          "linearStructures": [],
+          "trees": [],
+          "tables": [],
+          "variables": []
+        }
+      }
+    ]
+  }
+}
+
+ALLOWED VISUALIZATION TYPES:
+- array
+- array_hashmap
+- hashmap
+- two_pointers
+- sliding_window
+- binary_search
+- linked_list
+- stack
+- queue
+- graph
+- graph_traversal
+- tree
+- tree_traversal
+- dynamic_programming
+- sorting
+- backtracking
+- heap
+- generic
+
+STATE FORMATS:
+
+Arrays:
+{
+  "name": "nums",
+  "values": [2, 7, 11, 15],
+  "activeIndices": [0],
+  "highlightedIndices": []
+}
+
+Maps:
+{
+  "name": "mp",
+  "entries": {"2": 0},
+  "highlightedKeys": ["2"]
+}
+
+Graphs:
+{
+  "name": "graph",
+  "directed": false,
+  "nodes": [
+    {"id": "A", "label": "A", "visited": true, "active": true},
+    {"id": "B", "label": "B", "visited": false, "active": false}
+  ],
+  "edges": [
+    {"from": "A", "to": "B", "highlighted": true}
+  ]
+}
+
+Stacks and queues:
+{
+  "name": "worklist",
+  "kind": "stack",
+  "items": [1, 2, 3],
+  "activeIndex": 2
+}
+
+Trees:
+{
+  "name": "tree",
+  "nodes": [
+    {"id": "1", "label": "10"},
+    {"id": "2", "label": "5", "parentId": "1"},
+    {"id": "3", "label": "15", "parentId": "1"}
+  ]
+}
+
+Dynamic programming tables:
+{
+  "name": "dp",
+  "values": [[0, 1], [1, 2]],
+  "activeCell": {"row": 1, "column": 1}
+}
+
+Variables:
+{
+  "name": "i",
+  "role": "Current array index",
+  "value": 0
+}
+
+VISUALIZATION RULES:
+- Choose visualizationType based on the actual implementation,
+  not merely the problem title.
+- Multiple structures can be represented together in the same state.
+- Use arrays for array traversal and sorting.
+- Use arrays and maps together for hash-map algorithms.
+- Use graph nodes and edges for graph algorithms.
+- Use linearStructures with kind "stack" or "queue" for those
+  data structures.
+- Use trees for tree traversal and heap-like tree layouts when suitable.
+- Use tables for dynamic programming.
+- Use generic when the algorithm cannot be identified reliably.
+- The plan type and visualizationType must be identical.
+- initialState represents the state before the first operation.
+- Every step.state represents the complete state AFTER that step.
+- Preserve previous changes in later states unless an operation
+  changes them.
+- Include meaningful variable values and active/highlighted items.
+- Use empty arrays for irrelevant structure categories.
+- Use actual variable names from the source code when possible.
+- Keep messages concise and educational.
+- Generate between 1 and 30 steps.
+- Do not generate enormous traces for large inputs.
+- When no concrete input is available, use a small illustrative
+  example and disclose this in the plan reason.
+- Never claim an illustrative trace is the exact execution of
+  the user's source code.
+- If execution is ambiguous, lower confidence and explain why.
+- Do not invent a successful result unsupported by the code.
+- confidence must be between 0 and 1.
+- Return JSON only, without Markdown fences.
+
+PROBLEM STATEMENT:
+${problem ? JSON.stringify(problem, null, 2) : "Not provided"}
+
+ORIGINAL SOURCE CODE:
+${code}
+
+STRUCTURED CODE MODEL:
+${model ? JSON.stringify(model, null, 2) : "Not provided"}
+`;
+
+    const response = await client.responses.create({
+      model: MODEL_NAME,
+      input: prompt,
+    });
+
+    const raw = response.output_text;
+
+    if (!raw) {
+      throw new Error("Azure AI returned an empty response.");
+    }
+
+    const cleaned = raw
+      .trim()
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "");
+
+    const analysis = JSON.parse(cleaned);
+
+    // Validate algorithm analysis.
+    if (
+      typeof analysis.algorithm !== "string" ||
+      typeof analysis.variant !== "string" ||
+      typeof analysis.confidence !== "number" ||
+      !Number.isFinite(analysis.confidence) ||
+      analysis.confidence < 0 ||
+      analysis.confidence > 1 ||
+      typeof analysis.explanation !== "string" ||
+      !Array.isArray(analysis.techniques) ||
+      !analysis.techniques.every(
+        (item) => typeof item === "string"
+      ) ||
+      !Array.isArray(analysis.dataStructures) ||
+      !analysis.dataStructures.every(
+        (item) =>
+          isObject(item) &&
+          typeof item.name === "string" &&
+          typeof item.type === "string" &&
+          typeof item.role === "string"
+      ) ||
+      !isObject(analysis.complexity) ||
+      typeof analysis.complexity.time !== "string" ||
+      typeof analysis.complexity.space !== "string"
+    ) {
+      throw new Error("AI returned invalid analysis fields.");
+    }
+
+    // Validate visualization selection.
+    if (
+      typeof analysis.visualizationType !== "string" ||
+      typeof analysis.visualizationReason !== "string" ||
+      !Array.isArray(analysis.variablesToTrack) ||
+      !analysis.variablesToTrack.every(
+        (item) =>
+          isObject(item) &&
+          typeof item.name === "string" &&
+          typeof item.role === "string"
+      )
+    ) {
+      throw new Error(
+        "AI returned invalid visualization selection fields."
+      );
+    }
+
+    if (
+      !ALLOWED_VISUALIZATION_TYPES.has(
+        analysis.visualizationType
+      )
+    ) {
+      analysis.visualizationType = "generic";
+    }
+
+    // Validate the complete visualization plan.
+    if (!isVisualizationPlan(analysis.visualizationPlan)) {
+      throw new Error(
+        "AI returned an invalid visualization plan."
+      );
+    }
+
+    // Keep both selected types consistent.
+    analysis.visualizationPlan.type =
+      analysis.visualizationType;
+
+    // Limit trace size as a defensive measure.
+    analysis.visualizationPlan.steps =
+      analysis.visualizationPlan.steps.slice(0, 30);
+
+    console.log("Algorithm:", analysis.algorithm);
+    console.log(
+      "Visualization type:",
+      analysis.visualizationType
+    );
+    console.log(
+      "Visualization steps:",
+      analysis.visualizationPlan.steps.length
+    );
+
+    res.json({ analysis });
+  } catch (error) {
+    console.error(
+      "Algorithm analysis failed:",
+      error.status || "",
+      error.message
+    );
+
+    res.status(500).json({
+      error: "Algorithm analysis failed. Check the backend terminal.",
+    });
+  }
+});
+
+app.listen(PORT, "127.0.0.1", () => {
+  console.log(
+    `AlgoLens backend running at http://127.0.0.1:${PORT}`
+  );
+
+  if (!process.env.AZURE_AI_API_KEY) {
+    console.error(
+      "Warning: AZURE_AI_API_KEY is missing from the backend environment."
+    );
+  }
+});

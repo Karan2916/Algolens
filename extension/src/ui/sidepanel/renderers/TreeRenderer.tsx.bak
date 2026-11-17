@@ -1,0 +1,199 @@
+import type { FC } from "react";
+import type { TreeVisualState } from "../../../ai/types";
+
+interface TreeRendererProps {
+  tree: TreeVisualState;
+}
+
+interface TreeNodeItem {
+  id: string;
+  label: string;
+  parentId?: string;
+  active?: boolean;
+  visited?: boolean;
+}
+
+export const TreeRenderer: FC<TreeRendererProps> = ({ tree }) => {
+  const nodes = tree.nodes || [];
+
+  if (nodes.length === 0) {
+    return (
+      <section className="lc-card">
+        <span className="lc-section-title">Tree: {tree.name}</span>
+        <p style={{ color: "var(--lc-text-muted)", fontSize: 12 }}>Empty tree</p>
+      </section>
+    );
+  }
+
+  // Build parent-to-children mapping
+  const childrenMap = new Map<string, TreeNodeItem[]>();
+  const nodeMap = new Map<string, TreeNodeItem>();
+  const parentIds = new Set<string>();
+
+  for (const node of nodes) {
+    nodeMap.set(node.id, node);
+    if (node.parentId !== undefined) {
+      parentIds.add(node.parentId);
+      const list = childrenMap.get(node.parentId) || [];
+      list.push(node);
+      childrenMap.set(node.parentId, list);
+    }
+  }
+
+  // Find root nodes (no parentId or parentId not in nodes)
+  const roots = nodes.filter(
+    (n) => !n.parentId || !nodeMap.has(n.parentId)
+  );
+
+  // Recursive Tree Node Renderer
+  const renderSubtree = (node: TreeNodeItem, depth: number = 0): React.ReactNode => {
+    const children = childrenMap.get(node.id) || [];
+    const hasChildren = children.length > 0;
+
+    let bg = "#1f2937";
+    let border = "1px solid #374151";
+    let text = "#f3f4f6";
+
+    if (node.visited) {
+      bg = "#064e3b";
+      border = "1px solid #34d399";
+      text = "#a7f3d0";
+    }
+
+    if (node.active) {
+      bg = "#78350f";
+      border = "2px solid #f59e0b";
+      text = "#fef3c7";
+    }
+
+    return (
+      <div
+        key={node.id}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          margin: "4px 8px",
+          position: "relative",
+        }}
+      >
+        {/* Node Pill */}
+        <div
+          title={`Node ID: ${node.id}${node.parentId ? `, Parent: ${node.parentId}` : " (Root)"}`}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 12px",
+            borderRadius: 20,
+            backgroundColor: bg,
+            border,
+            color: text,
+            fontSize: 12,
+            fontWeight: 700,
+            boxShadow: node.active
+              ? "0 0 12px rgba(245, 158, 11, 0.6)"
+              : node.visited
+              ? "0 0 8px rgba(52, 211, 153, 0.3)"
+              : "none",
+            transition: "all 150ms ease",
+            zIndex: 2,
+          }}
+        >
+          <span>{node.label}</span>
+          {depth === 0 && (
+            <span
+              style={{
+                fontSize: 9,
+                color: "var(--lc-text-secondary)",
+                fontWeight: 500,
+              }}
+            >
+              (Root)
+            </span>
+          )}
+        </div>
+
+        {/* Children branch */}
+        {hasChildren && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: "1px dashed #4b5563",
+              position: "relative",
+              gap: 8,
+              flexWrap: "wrap",
+            }}
+          >
+            {/* Visual connector line downward */}
+            <div
+              style={{
+                position: "absolute",
+                top: -12,
+                left: "50%",
+                width: 1,
+                height: 12,
+                backgroundColor: "#4b5563",
+              }}
+            />
+            {children.map((child) => renderSubtree(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <section className="lc-card" style={{ overflowX: "auto" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 10,
+        }}
+      >
+        <span className="lc-section-title" style={{ marginBottom: 0 }}>
+          🌳 Tree: {tree.name}
+        </span>
+        <span style={{ fontSize: 11, color: "var(--lc-text-muted)" }}>
+          {nodes.length} {nodes.length === 1 ? "node" : "nodes"}
+        </span>
+      </div>
+
+      {/* Tree Visual Hierarchy */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          padding: "16px 8px",
+          backgroundColor: "#111827",
+          borderRadius: 8,
+          border: "1px solid #1f2937",
+          overflowX: "auto",
+        }}
+      >
+        {roots.map((root) => renderSubtree(root, 0))}
+      </div>
+
+      {/* Legend */}
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          marginTop: 8,
+          fontSize: 11,
+          color: "var(--lc-text-secondary)",
+          justifyContent: "center",
+        }}
+      >
+        <span>🟠 Active node</span>
+        <span>🟢 Visited node</span>
+        <span>⚪ Unvisited</span>
+      </div>
+    </section>
+  );
+};

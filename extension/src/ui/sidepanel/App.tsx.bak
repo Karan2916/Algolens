@@ -1,0 +1,429 @@
+
+import { useEffect, useState } from "react";
+
+import type { CodeSnapshot } from "../../shared/types";
+import type { AlgorithmAnalysis } from "../../ai/types";
+import VisualizationRenderer from "./VisualizationRenderer";
+
+function isCodeSnapshot(value: unknown): value is CodeSnapshot {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const snapshot = value as Record<string, unknown>;
+
+  return (
+    typeof snapshot.code === "string" &&
+    typeof snapshot.language === "string"
+  );
+}
+
+function isAlgorithmAnalysis(
+  value: unknown
+): value is AlgorithmAnalysis {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const analysis = value as Record<string, any>;
+
+  return (
+    typeof analysis.algorithm === "string" &&
+    typeof analysis.explanation === "string" &&
+    typeof analysis.confidence === "number" &&
+    Array.isArray(analysis.techniques) &&
+    Array.isArray(analysis.dataStructures) &&
+    typeof analysis.complexity === "object" &&
+    analysis.complexity !== null
+  );
+}
+
+export default function App() {
+  const [snapshot, setSnapshot] = useState<CodeSnapshot | null>(
+    null
+  );
+
+  const [analysis, setAnalysis] =
+    useState<AlgorithmAnalysis | null>(null);
+
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+
+  const visualizationPlan = analysis?.visualizationPlan;
+
+  const steps = visualizationPlan?.steps ?? [];
+
+  const currentStep = steps[currentStepIndex];
+
+  const currentState =
+    currentStep?.state ?? visualizationPlan?.initialState;
+
+  const visualizationType =
+    analysis?.visualizationType ?? "generic";
+
+  // Load the latest code and AI analysis from Chrome storage.
+  useEffect(() => {
+    chrome.storage.local
+      .get(["codeSnapshot", "algorithmAnalysis"])
+      .then((result) => {
+        if (isCodeSnapshot(result.codeSnapshot)) {
+          setSnapshot(result.codeSnapshot);
+        }
+
+        if (isAlgorithmAnalysis(result.algorithmAnalysis)) {
+          setAnalysis(result.algorithmAnalysis);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load AlgoLens data:", error);
+      });
+
+    // Listen for code and analysis updates from the background worker.
+    const handleStorageChange = (
+      changes: {
+        [key: string]: chrome.storage.StorageChange;
+      },
+      areaName: string
+    ) => {
+      if (areaName !== "local") {
+        return;
+      }
+
+      if (changes.codeSnapshot) {
+        const newSnapshot = changes.codeSnapshot.newValue;
+
+        if (isCodeSnapshot(newSnapshot)) {
+          setSnapshot(newSnapshot);
+        }
+      }
+
+      if (changes.algorithmAnalysis) {
+        const newAnalysis =
+          changes.algorithmAnalysis.newValue;
+
+        if (isAlgorithmAnalysis(newAnalysis)) {
+          setAnalysis(newAnalysis);
+          setCurrentStepIndex(0);
+        } else {
+          setAnalysis(null);
+          setCurrentStepIndex(0);
+        }
+      }
+    };
+
+    chrome.storage.onChanged.addListener(handleStorageChange);
+
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+    };
+  }, []);
+
+  // Navigation controls.
+  const goToPreviousStep = () => {
+    setCurrentStepIndex((index) => Math.max(0, index - 1));
+  };
+
+  const goToNextStep = () => {
+    setCurrentStepIndex((index) =>
+      Math.min(steps.length - 1, index + 1)
+    );
+  };
+
+  const resetVisualization = () => {
+    setCurrentStepIndex(0);
+  };
+
+  return (
+    <div
+      style={{
+        padding: 20,
+        fontFamily: "Arial, sans-serif",
+        color: "#1f2937",
+        maxWidth: 900,
+        margin: "0 auto",
+      }}
+    >
+      <h1>AlgoLens</h1>
+
+      {/* Current code */}
+      {!snapshot ? (
+        <p>Waiting for a coding problem...</p>
+      ) : (
+        <>
+          <p>
+            <strong>Language:</strong> {snapshot.language}
+          </p>
+
+          <h2>Current Code</h2>
+
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              overflowX: "auto",
+              background: "#f5f5f5",
+              padding: 12,
+              borderRadius: 8,
+              fontSize: 12,
+            }}
+          >
+            {snapshot.code}
+          </pre>
+        </>
+      )}
+
+      <hr />
+
+      {/* AI algorithm analysis */}
+      <h2>AI Algorithm Analysis</h2>
+
+      {!analysis ? (
+        <p>Waiting for AI analysis...</p>
+      ) : (
+        <>
+          <h3>{analysis.algorithm}</h3>
+
+          {analysis.variant && (
+            <p>
+              <strong>Variant:</strong> {analysis.variant}
+            </p>
+          )}
+
+          <p>
+            <strong>Confidence:</strong>{" "}
+            {(analysis.confidence * 100).toFixed(0)}%
+          </p>
+
+          <h3>Explanation</h3>
+          <p>{analysis.explanation}</p>
+
+          <h3>Complexity</h3>
+
+          <p>
+            <strong>Time:</strong>{" "}
+            {analysis.complexity.time ?? "Not available"}
+          </p>
+
+          <p>
+            <strong>Space:</strong>{" "}
+            {analysis.complexity.space ?? "Not available"}
+          </p>
+
+          <h3>Techniques</h3>
+
+          {analysis.techniques.length > 0 ? (
+            <ul>
+              {analysis.techniques.map((technique, index) => (
+                <li key={`${technique}-${index}`}>
+                  {technique}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No techniques identified.</p>
+          )}
+
+          <h3>Data Structures</h3>
+
+          {analysis.dataStructures.length > 0 ? (
+            <ul>
+              {analysis.dataStructures.map((item, index) => (
+                <li key={`${item.name}-${index}`}>
+                  <strong>{item.name}</strong> ({item.type}):{" "}
+                  {item.role}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No data structures identified.</p>
+          )}
+
+          <hr />
+
+          {/* AI-selected visualization */}
+          <h2>AI-Selected Visualization</h2>
+
+          <p>
+            <strong>Visualization type:</strong>{" "}
+            {visualizationType}
+          </p>
+
+          {analysis.visualizationReason && (
+            <p>
+              <strong>Why this visualization?</strong>{" "}
+              {analysis.visualizationReason}
+            </p>
+          )}
+
+          {analysis.variablesToTrack &&
+            analysis.variablesToTrack.length > 0 && (
+              <>
+                <h3>Variables to Track</h3>
+
+                <ul>
+                  {analysis.variablesToTrack.map(
+                    (variable, index) => (
+                      <li
+                        key={`${variable.name}-${index}`}
+                      >
+                        <strong>{variable.name}:</strong>{" "}
+                        {variable.role}
+                      </li>
+                    )
+                  )}
+                </ul>
+              </>
+            )}
+
+          <hr />
+
+          {/* Generic visualization plan player */}
+          <section
+            style={{
+              marginTop: 20,
+              padding: 16,
+              border: "1px solid #d1d5db",
+              borderRadius: 12,
+              background: "#ffffff",
+            }}
+          >
+            <h2>
+              {visualizationPlan?.title ??
+                "Algorithm Visualization"}
+            </h2>
+
+            {visualizationPlan?.reason && (
+              <p>{visualizationPlan.reason}</p>
+            )}
+
+            {!visualizationPlan ? (
+              <div
+                style={{
+                  padding: 12,
+                  background: "#f3f4f6",
+                  borderRadius: 8,
+                }}
+              >
+                <p>
+                  The AI has not generated a visualization plan
+                  for this analysis yet.
+                </p>
+                <p>
+                  Edit your solution on LeetCode and wait for the
+                  analysis to finish.
+                </p>
+              </div>
+            ) : (
+              <>
+                {currentStep ? (
+                  <>
+                    <p>
+                      <strong>Step:</strong>{" "}
+                      {currentStepIndex + 1} of {steps.length}
+                    </p>
+
+                    <div
+                      style={{
+                        padding: 12,
+                        margin: "12px 0",
+                        borderRadius: 8,
+                        background: "#eff6ff",
+                        border: "1px solid #bfdbfe",
+                      }}
+                    >
+                      <strong>Current operation</strong>
+                      <p style={{ marginBottom: 0 }}>
+                        {currentStep.message}
+                      </p>
+
+                      {currentStep.operation && (
+                        <p
+                          style={{
+                            marginBottom: 0,
+                            marginTop: 8,
+                            fontSize: 12,
+                            color: "#4b5563",
+                          }}
+                        >
+                          Operation: {currentStep.operation}
+                        </p>
+                      )}
+
+                      {currentStep.line !== undefined && (
+                        <p
+                          style={{
+                            marginBottom: 0,
+                            marginTop: 8,
+                            fontSize: 12,
+                            color: "#4b5563",
+                          }}
+                        >
+                          Code line: {currentStep.line}
+                        </p>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p>
+                    No steps were generated. Showing the initial
+                    visualization state, if available.
+                  </p>
+                )}
+
+                {/* Render whichever structures the AI supplied. */}
+                {currentState ? (
+                  <VisualizationRenderer state={currentState} />
+                ) : (
+                  <p>No visualization state is available.</p>
+                )}
+
+                {/* Playback controls */}
+                {steps.length > 0 && (
+                  <>
+                    <p
+                      style={{
+                        fontSize: 12,
+                        color: "#6b7280",
+                        marginTop: 16,
+                      }}
+                    >
+                      These steps are AI-generated illustrative
+                      states, not a guaranteed execution trace.
+                    </p>
+
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 8,
+                        marginTop: 12,
+                      }}
+                    >
+                      <button
+                        onClick={goToPreviousStep}
+                        disabled={currentStepIndex === 0}
+                      >
+                        Previous
+                      </button>
+
+                      <button
+                        onClick={goToNextStep}
+                        disabled={
+                          currentStepIndex >= steps.length - 1
+                        }
+                      >
+                        Next
+                      </button>
+
+                      <button onClick={resetVisualization}>
+                        Reset
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
+}

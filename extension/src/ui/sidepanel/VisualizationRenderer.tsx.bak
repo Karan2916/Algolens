@@ -1,0 +1,574 @@
+
+import type { CSSProperties } from "react";
+import type { VisualizationState } from "../../ai/types";
+
+interface Props {
+  state: VisualizationState;
+}
+
+const cardStyle: CSSProperties = {
+  border: "1px solid #374151",
+  borderRadius: 10,
+  padding: 12,
+  marginBottom: 12,
+  background: "#111827",
+  color: "#f9fafb",
+};
+
+const headingStyle: CSSProperties = {
+  fontSize: 14,
+  fontWeight: 700,
+  marginBottom: 10,
+};
+
+const itemStyle: CSSProperties = {
+  display: "inline-flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  minWidth: 42,
+  minHeight: 42,
+  padding: "5px 8px",
+  border: "1px solid #64748b",
+  borderRadius: 7,
+  background: "#1f2937",
+  color: "#f9fafb",
+  fontSize: 13,
+};
+
+function displayValue(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  return String(value);
+}
+
+function isGridRows(value: unknown[]): boolean {
+  return value.length > 0 && value.every(Array.isArray);
+}
+
+function getVariableNumber(
+  state: VisualizationState,
+  name: string
+): number | undefined {
+  const variable = state.variables?.find(
+    (item) => item.name.toLowerCase() === name.toLowerCase()
+  );
+
+  if (typeof variable?.value === "number") {
+    return variable.value;
+  }
+
+  if (
+    typeof variable?.value === "string" &&
+    variable.value.trim() !== "" &&
+    Number.isFinite(Number(variable.value))
+  ) {
+    return Number(variable.value);
+  }
+
+  return undefined;
+}
+
+export default function VisualizationRenderer({ state }: Props) {
+  const gridArray = state.arrays?.find(
+    (array) => array.name.toLowerCase() === "grid"
+  );
+
+  const visitedArray = state.arrays?.find(
+    (array) => array.name.toLowerCase() === "visited"
+  );
+
+  const gridRows =
+    gridArray && isGridRows(gridArray.values)
+      ? (gridArray.values as unknown[][])
+      : [];
+
+  const visitedRows =
+    visitedArray && isGridRows(visitedArray.values)
+      ? (visitedArray.values as unknown[][])
+      : [];
+
+  const activeRow = getVariableNumber(state, "r");
+  const activeCol = getVariableNumber(state, "c");
+
+  const isIslandGrid = gridRows.length > 0;
+
+  const hasContent =
+    (state.arrays?.length ?? 0) > 0 ||
+    (state.maps?.length ?? 0) > 0 ||
+    (state.graphs?.length ?? 0) > 0 ||
+    (state.linearStructures?.length ?? 0) > 0 ||
+    (state.trees?.length ?? 0) > 0 ||
+    (state.tables?.length ?? 0) > 0 ||
+    (state.variables?.length ?? 0) > 0;
+
+  if (!hasContent) {
+    return (
+      <div style={cardStyle}>
+        No visualization data is available for this step.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Number of Islands: infection-spread grid */}
+      {isIslandGrid && (
+        <section
+          style={{
+            ...cardStyle,
+            background:
+              "radial-gradient(circle at top, #172554 0%, #0f172a 65%)",
+            border: "1px solid #334155",
+          }}
+        >
+          <div style={{ ...headingStyle, fontSize: 16 }}>
+            🦠 Island Explorer
+          </div>
+
+          <p style={{ color: "#cbd5e1", fontSize: 12 }}>
+            Explore connected land cells. Water blocks the spread,
+            and each newly discovered island increases the counter.
+          </p>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: `repeat(${
+                Math.max(...gridRows.map((row) => row.length))
+              }, minmax(0, 1fr))`,
+              gap: 5,
+              maxWidth: 420,
+              margin: "18px auto",
+            }}
+          >
+            {gridRows.flatMap((row, rowIndex) =>
+              row.map((cell, colIndex) => {
+                const isLand =
+                  String(cell) === "1" || cell === 1;
+
+                const visited =
+                  visitedRows[rowIndex]?.[colIndex] === true ||
+                  visitedRows[rowIndex]?.[colIndex] === 1 ||
+                  visitedRows[rowIndex]?.[colIndex] === "true";
+
+                const active =
+                  activeRow === rowIndex &&
+                  activeCol === colIndex;
+
+                const isExplored = isLand && visited;
+
+                let background = "#075985";
+                let border = "1px solid #38bdf8";
+                let symbol = "≈";
+                let label = "Water";
+
+                if (isLand) {
+                  background = "#166534";
+                  border = "1px solid #4ade80";
+                  symbol = "●";
+                  label = "Unvisited land";
+
+                  if (isExplored) {
+                    background = "#6d28d9";
+                    border = "1px solid #c4b5fd";
+                    symbol = "✦";
+                    label = "Explored land";
+                  }
+
+                  if (active) {
+                    background = "#c2410c";
+                    border = "2px solid #fdba74";
+                    symbol = "✹";
+                    label = "Currently exploring";
+                  }
+                }
+
+                return (
+                  <div
+                    key={`${rowIndex}-${colIndex}`}
+                    title={`${label} — row ${rowIndex}, column ${colIndex}`}
+                    style={{
+                      aspectRatio: "1",
+                      minWidth: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      borderRadius: 9,
+                      border,
+                      background,
+                      color: "#ffffff",
+                      fontWeight: 800,
+                      fontSize: 15,
+                      boxShadow: active
+                        ? "0 0 18px #f9731680"
+                        : isExplored
+                          ? "0 0 10px #8b5cf640"
+                          : "none",
+                      transition:
+                        "background 250ms ease, box-shadow 250ms ease",
+                    }}
+                  >
+                    {symbol}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              justifyContent: "center",
+              gap: 12,
+              fontSize: 11,
+              color: "#e2e8f0",
+            }}
+          >
+            <span>🟢 Unvisited land</span>
+            <span>🟣 Explored land</span>
+            <span>🟠 Active cell</span>
+            <span>🔵 Water</span>
+          </div>
+
+          <div
+            style={{
+              marginTop: 14,
+              padding: 10,
+              borderRadius: 8,
+              background: "#1e293b",
+              color: "#e2e8f0",
+              fontSize: 13,
+            }}
+          >
+            <strong>Islands discovered:</strong>{" "}
+            {getVariableNumber(state, "count") ??
+              getVariableNumber(state, "islands") ??
+              "—"}
+
+            {activeRow !== undefined &&
+              activeCol !== undefined && (
+                <div style={{ marginTop: 6, color: "#cbd5e1" }}>
+                  Exploring cell ({activeRow}, {activeCol})
+                </div>
+              )}
+          </div>
+        </section>
+      )}
+
+      {/* Arrays — grid and visited are rendered above */}
+      {state.arrays
+        ?.filter(
+          (array) =>
+            !["grid", "visited"].includes(array.name.toLowerCase())
+        )
+        .map((array, arrayIndex) => (
+          <section
+            key={`array-${array.name}-${arrayIndex}`}
+            style={cardStyle}
+          >
+            <div style={headingStyle}>Array: {array.name}</div>
+
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                alignItems: "flex-start",
+              }}
+            >
+              {array.values.map((value, index) => {
+                const active =
+                  array.activeIndices?.includes(index) ?? false;
+                const highlighted =
+                  array.highlightedIndices?.includes(index) ?? false;
+
+                return (
+                  <div
+                    key={index}
+                    style={{
+                      ...itemStyle,
+                      border: active
+                        ? "2px solid #f59e0b"
+                        : highlighted
+                          ? "2px solid #34d399"
+                          : "1px solid #64748b",
+                      background: active
+                        ? "#78350f"
+                        : highlighted
+                          ? "#064e3b"
+                          : "#1f2937",
+                    }}
+                  >
+                    <span>{displayValue(value)}</span>
+                    <span style={{ fontSize: 10, color: "#9ca3af" }}>
+                      [{index}]
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+
+      {/* Hash maps */}
+      {state.maps?.map((map, mapIndex) => (
+        <section
+          key={`map-${map.name}-${mapIndex}`}
+          style={cardStyle}
+        >
+          <div style={headingStyle}>Hash Map: {map.name}</div>
+
+          {Object.entries(map.entries).length === 0 ? (
+            <div style={{ color: "#9ca3af" }}>Empty map</div>
+          ) : (
+            <div style={{ display: "grid", gap: 7 }}>
+              {Object.entries(map.entries).map(([key, value]) => {
+                const highlighted =
+                  map.highlightedKeys?.includes(key) ?? false;
+
+                return (
+                  <div
+                    key={key}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      padding: 8,
+                      borderRadius: 6,
+                      background: highlighted ? "#064e3b" : "#1f2937",
+                      border: highlighted
+                        ? "1px solid #34d399"
+                        : "1px solid #374151",
+                    }}
+                  >
+                    <span>{key}</span>
+                    <span>{displayValue(value)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      ))}
+
+      {/* Stacks and queues */}
+      {state.linearStructures?.map((structure, structureIndex) => (
+        <section
+          key={`linear-${structure.name}-${structureIndex}`}
+          style={cardStyle}
+        >
+          <div style={headingStyle}>
+            {structure.kind === "stack" ? "Stack" : "Queue"}:{" "}
+            {structure.name}
+          </div>
+
+          <div
+            style={{ color: "#9ca3af", fontSize: 12, marginBottom: 8 }}
+          >
+            {structure.kind === "stack"
+              ? "Top → bottom"
+              : "Front → rear"}
+          </div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {structure.items.map((value, index) => (
+              <div
+                key={index}
+                style={{
+                  ...itemStyle,
+                  border:
+                    structure.activeIndex === index
+                      ? "2px solid #f59e0b"
+                      : "1px solid #64748b",
+                }}
+              >
+                {displayValue(value)}
+              </div>
+            ))}
+
+            {structure.items.length === 0 && (
+              <span style={{ color: "#9ca3af" }}>Empty</span>
+            )}
+          </div>
+        </section>
+      ))}
+
+      {/* Graphs */}
+      {state.graphs?.map((graph, graphIndex) => (
+        <section
+          key={`graph-${graph.name}-${graphIndex}`}
+          style={cardStyle}
+        >
+          <div style={headingStyle}>Graph: {graph.name}</div>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {graph.nodes.map((node) => (
+              <div
+                key={node.id}
+                style={{
+                  ...itemStyle,
+                  border: node.active
+                    ? "2px solid #f59e0b"
+                    : node.visited
+                      ? "2px solid #34d399"
+                      : "1px solid #64748b",
+                  background: node.active
+                    ? "#78350f"
+                    : node.visited
+                      ? "#064e3b"
+                      : "#1f2937",
+                }}
+              >
+                {node.label}
+                <span style={{ fontSize: 10, color: "#9ca3af" }}>
+                  {node.id}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 12, fontSize: 13 }}>
+            <strong>Edges</strong>
+            {graph.edges.length === 0 ? (
+              <div style={{ color: "#9ca3af" }}>No edges</div>
+            ) : (
+              graph.edges.map((edge, index) => (
+                <div
+                  key={`${edge.from}-${edge.to}-${index}`}
+                  style={{
+                    marginTop: 5,
+                    color: edge.highlighted ? "#34d399" : "#d1d5db",
+                  }}
+                >
+                  {edge.from} {graph.directed ? "→" : "—"} {edge.to}
+                  {edge.weight !== undefined
+                    ? ` (weight: ${edge.weight})`
+                    : ""}
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      ))}
+
+      {/* Trees */}
+      {state.trees?.map((tree, treeIndex) => (
+        <section
+          key={`tree-${tree.name}-${treeIndex}`}
+          style={cardStyle}
+        >
+          <div style={headingStyle}>Tree: {tree.name}</div>
+
+          {tree.nodes.map((node) => (
+            <div
+              key={node.id}
+              style={{
+                margin: "6px 0",
+                padding: 8,
+                borderRadius: 6,
+                background: node.active
+                  ? "#78350f"
+                  : node.visited
+                    ? "#064e3b"
+                    : "#1f2937",
+                border: "1px solid #374151",
+              }}
+            >
+              <strong>{node.label}</strong>
+              {node.parentId !== undefined && (
+                <span style={{ color: "#9ca3af", marginLeft: 8 }}>
+                  parent: {node.parentId}
+                </span>
+              )}
+            </div>
+          ))}
+        </section>
+      ))}
+
+      {/* Dynamic programming tables */}
+      {state.tables?.map((table, tableIndex) => (
+        <section
+          key={`table-${table.name}-${tableIndex}`}
+          style={cardStyle}
+        >
+          <div style={headingStyle}>Table: {table.name}</div>
+
+          <div style={{ overflowX: "auto" }}>
+            <table
+              style={{
+                borderCollapse: "collapse",
+                width: "100%",
+                fontSize: 12,
+              }}
+            >
+              <tbody>
+                {table.values.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {row.map((value, columnIndex) => {
+                      const active =
+                        table.activeCell?.row === rowIndex &&
+                        table.activeCell?.column === columnIndex;
+
+                      return (
+                        <td
+                          key={columnIndex}
+                          style={{
+                            padding: 8,
+                            textAlign: "center",
+                            border: "1px solid #4b5563",
+                            background: active ? "#78350f" : "#1f2937",
+                          }}
+                        >
+                          {displayValue(value)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ))}
+
+      {/* Tracked variables */}
+      {state.variables && state.variables.length > 0 && (
+        <section style={cardStyle}>
+          <div style={headingStyle}>Tracked Variables</div>
+
+          {state.variables.map((variable, index) => (
+            <div
+              key={`${variable.name}-${index}`}
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                marginBottom: 8,
+                padding: 8,
+                background: "#1f2937",
+                borderRadius: 6,
+              }}
+            >
+              <strong>{variable.name}</strong>
+              <span style={{ color: "#9ca3af" }}>{variable.role}</span>
+              {variable.value !== undefined && (
+                <span>= {displayValue(variable.value)}</span>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+    </div>
+  );
+}
