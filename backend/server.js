@@ -56,6 +56,12 @@ app.get("/", (_req, res) => {
 // Test Azure AI connectivity.
 app.get("/test-ai", async (_req, res) => {
   try {
+    if (!process.env.AZURE_AI_API_KEY) {
+      return res.status(503).json({
+        error: "AZURE_AI_API_KEY is not configured in backend/.env.",
+      });
+    }
+
     const response = await client.responses.create({
       model: MODEL_NAME,
       input:
@@ -338,12 +344,235 @@ function isVisualizationPlan(plan) {
 }
 
 function parseModelJson(raw) {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new Error("Azure AI returned an empty response.");
+  }
+
   const cleaned = raw
     .trim()
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "");
-  return JSON.parse(cleaned);
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  // First try the complete response. This is the expected format.
+  try {
+    return JSON.parse(cleaned);
+  } catch (_firstError) {
+    // Some model responses contain a short sentence before/after the JSON.
+    // Extract the first balanced JSON object without breaking braces in strings.
+    const start = cleaned.indexOf("{");
+    if (start < 0) {
+      throw new Error("AI response did not contain a JSON object.");
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < cleaned.length; i += 1) {
+      const char = cleaned[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+      } else if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const jsonText = cleaned.slice(start, i + 1);
+          try {
+            return JSON.parse(jsonText);
+          } catch (_secondError) {
+            throw new Error("AI response contained malformed JSON.");
+          }
+        }
+      }
+    }
+
+    throw new Error("AI response contained an incomplete JSON object.");
+  }
+}
+
+function asString(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function asConfidence(value) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return 0.5;
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item : null))
+    .filter((item) => item !== null);
+}
+
+function normalizeDataStructures(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") {
+        return {
+          name: item,
+          type: "unknown",
+          role: "Identified by AI",
+        };
+      }
+      if (!isObject(item) || typeof item.name !== "string") return null;
+      return {
+        name: item.name,
+        type: asString(item.type, "unknown"),
+        role: asString(item.role, "Role not specified"),
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeVariables(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") {
+        return { name: item, role: "Variable identified by AI" };
+      }
+      if (!isObject(item) || typeof item.name !== "string") return null;
+      return {
+        name: item.name,
+        role: asString(item.role, "Role not specified"),
+      };
+    })
+    .filter(Boolean);
+}
+
+// Normalize optional/mis-typed model fields instead of discarding an otherwise
+// useful algorithm explanation. Visualization plans remain strictly validated.
+function normalizeAnalysis(candidate, language) {
+  if (!isObject(candidate)) {
+    throw new Error("AI analysis response must be a JSON object.");
+  }
+
+  const issues = [];
+  const complexity = isObject(candidate.complexity)
+    ? candidate.complexity
+    : {};
+
+  const algorithm = asString(
+    candidate.algorithm,
+    asString(candidate.algorithmName, "Unidentified algorithm")
+  );
+  if (algorithm === "Unidentified algorithm") issues.push("algorithm");
+
+  const variant = asString(
+    candidate.variant,
+    asString(candidate.pattern, "Not specified")
+  );
+  if (variant === "Not specified") issues.push("variant");
+
+  const timeComplexity = asString(
+    complexity.time,
+    asString(candidate.timeComplexity, "Unable to determine reliably")
+  );
+  const spaceComplexity = asString(
+    complexity.space,
+    asString(candidate.spaceComplexity, "Unable to determine reliably")
+  );
+  if (timeComplexity === "Unable to determine reliably") {
+    issues.push("complexity.time");
+  }
+  if (spaceComplexity === "Unable to determine reliably") {
+    issues.push("complexity.space");
+  }
+
+  const rawPlan = isObject(candidate.visualizationPlan)
+    ? candidate.visualizationPlan
+    : undefined;
+  if (rawPlan) sanitizeVisualizationPlan(rawPlan);
+  const hasValidPlanShape = isVisualizationPlan(rawPlan);
+  const modelSaysAvailable = candidate.myExecutionAvailable === true;
+  // If the model omitted this flag but supplied a complete valid plan, infer
+  // availability from the plan. Never infer availability from an incomplete plan.
+  const myExecutionAvailable = modelSaysAvailable ||
+    (candidate.myExecutionAvailable === undefined && hasValidPlanShape);
+
+  const requestedType = asString(
+    candidate.visualizationType,
+    asString(rawPlan?.type, "generic")
+  );
+  const visualizationType = ALLOWED_VISUALIZATION_TYPES.has(requestedType)
+    ? requestedType
+    : "generic";
+
+  if (!ALLOWED_VISUALIZATION_TYPES.has(requestedType)) {
+    issues.push("visualizationType");
+  }
+  if (typeof candidate.myExecutionAvailable !== "boolean") {
+    issues.push("myExecutionAvailable");
+  }
+  if (!Array.isArray(candidate.techniques)) issues.push("techniques");
+  if (!Array.isArray(candidate.dataStructures)) issues.push("dataStructures");
+  if (!Array.isArray(candidate.variablesToTrack)) issues.push("variablesToTrack");
+
+  const normalized = {
+    ...candidate,
+    algorithm,
+    variant,
+    confidence: asConfidence(candidate.confidence),
+    explanation: asString(
+      candidate.explanation,
+      "The model did not provide a detailed explanation for this solution."
+    ),
+    techniques: normalizeStringArray(candidate.techniques),
+    dataStructures: normalizeDataStructures(candidate.dataStructures),
+    complexity: {
+      time: timeComplexity,
+      space: spaceComplexity,
+    },
+    visualizationType,
+    visualizationReason: asString(
+      candidate.visualizationReason,
+      "Visualization selected from the available code structure."
+    ),
+    variablesToTrack: normalizeVariables(candidate.variablesToTrack),
+    myExecutionAvailable,
+    myExecutionUnavailableReason: asString(
+      candidate.myExecutionUnavailableReason,
+      myExecutionAvailable
+        ? ""
+        : "The AI could not provide a sufficiently complete trace of the submitted implementation."
+    ),
+    language: typeof language === "string" ? language : "unknown",
+  };
+
+  // Keep the plan only if it passes the existing strict frontend contract.
+  if (myExecutionAvailable && hasValidPlanShape) {
+    normalized.visualizationPlan = rawPlan;
+  } else {
+    delete normalized.visualizationPlan;
+    normalized.myExecutionAvailable = false;
+    if (!normalized.myExecutionUnavailableReason) {
+      normalized.myExecutionUnavailableReason =
+        "The submitted-code trace did not pass visualization validation.";
+    }
+    if (candidate.visualizationPlan !== undefined && !hasValidPlanShape) {
+      issues.push("visualizationPlan");
+    }
+  }
+
+  return { analysis: normalized, issues: [...new Set(issues)] };
 }
 
 function isOptimalExecution(value) {
@@ -359,22 +588,115 @@ function isOptimalExecution(value) {
 
   return (
     typeof value.algorithm === "string" &&
+    value.algorithm.trim().length > 0 &&
     typeof value.explanation === "string" &&
+    value.explanation.trim().length > 0 &&
     typeof value.confidence === "number" &&
     Number.isFinite(value.confidence) &&
     value.confidence >= 0.65 &&
     isObject(value.complexity) &&
     typeof value.complexity.time === "string" &&
+    value.complexity.time.trim().length > 0 &&
     typeof value.complexity.space === "string" &&
+    value.complexity.space.trim().length > 0 &&
     typeof value.visualizationType === "string" &&
     ALLOWED_VISUALIZATION_TYPES.has(value.visualizationType) &&
     isVisualizationPlan(value.visualizationPlan) &&
+    value.visualizationPlan.type === value.visualizationType &&
     value.visualizationPlan.completion?.status === "completed" &&
     Object.prototype.hasOwnProperty.call(
       value.visualizationPlan.completion,
       "returnValue"
     )
   );
+}
+
+// Return actionable validation failures rather than a generic unavailable message.
+function getOptimalValidationIssues(value) {
+  const issues = [];
+
+  if (!isObject(value)) {
+    return ["the AI response is not a JSON object"];
+  }
+
+  if (typeof value.available !== "boolean") {
+    issues.push("available must be a boolean");
+  } else if (value.available !== true) {
+    issues.push("the model marked the optimal analysis unavailable");
+  }
+
+  if (typeof value.reason !== "string" || !value.reason.trim()) {
+    issues.push("reason is missing or invalid");
+  }
+  if (typeof value.algorithm !== "string" || !value.algorithm.trim()) {
+    issues.push("algorithm is missing or invalid");
+  }
+  if (typeof value.explanation !== "string" || !value.explanation.trim()) {
+    issues.push("explanation is missing or invalid");
+  }
+  if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence)) {
+    issues.push("confidence must be a finite number");
+  } else if (value.confidence < 0.65) {
+    issues.push(`confidence ${value.confidence} is below the required 0.65`);
+  } else if (value.confidence > 1 || value.confidence < 0) {
+    issues.push("confidence must be between 0 and 1");
+  }
+
+  if (!isObject(value.complexity)) {
+    issues.push("complexity object is missing");
+  } else {
+    if (typeof value.complexity.time !== "string" || !value.complexity.time.trim()) {
+      issues.push("complexity.time is missing or invalid");
+    }
+    if (typeof value.complexity.space !== "string" || !value.complexity.space.trim()) {
+      issues.push("complexity.space is missing or invalid");
+    }
+  }
+
+  if (
+    typeof value.visualizationType !== "string" ||
+    !ALLOWED_VISUALIZATION_TYPES.has(value.visualizationType)
+  ) {
+    issues.push("visualizationType is missing or not supported");
+  }
+
+  const plan = value.visualizationPlan;
+  if (!isObject(plan)) {
+    issues.push("visualizationPlan is missing or not an object");
+  } else {
+    if (typeof plan.type !== "string" || !ALLOWED_VISUALIZATION_TYPES.has(plan.type)) {
+      issues.push("visualizationPlan.type is missing or not supported");
+    }
+    if (typeof value.visualizationType === "string" && plan.type !== value.visualizationType) {
+      issues.push("visualizationPlan.type does not match visualizationType");
+    }
+    if (typeof plan.title !== "string" || !plan.title.trim()) {
+      issues.push("visualizationPlan.title is missing");
+    }
+    if (typeof plan.reason !== "string" || !plan.reason.trim()) {
+      issues.push("visualizationPlan.reason is missing");
+    }
+    if (!isVisualizationState(plan.initialState)) {
+      issues.push("visualizationPlan.initialState is invalid");
+    }
+    if (!Array.isArray(plan.steps) || plan.steps.length === 0) {
+      issues.push("visualizationPlan.steps must contain at least one step");
+    } else if (!isVisualizationPlan(plan)) {
+      issues.push("one or more visualization steps have an invalid state or field");
+    }
+    if (!isObject(plan.completion)) {
+      issues.push("visualizationPlan.completion is missing");
+    } else {
+      if (plan.completion.status !== "completed") {
+        issues.push(`completion.status is ${String(plan.completion.status)}, expected completed`);
+      }
+      if (!Object.prototype.hasOwnProperty.call(plan.completion, "returnValue")) {
+        issues.push("completion.returnValue is missing");
+      }
+    }
+  }
+
+  return [...new Set(issues)];
 }
 
 function getUnavailableOptimal(reason) {
@@ -454,45 +776,62 @@ ${JSON.stringify(selectedExample, null, 2)}
   }
 
   const candidate = parseModelJson(response.output_text);
-  if (isObject(candidate)) {
-    sanitizeVisualizationPlan(candidate.visualizationPlan);
+
+  if (!isObject(candidate)) {
+    console.warn("[AlgoLens] Optimal Execution response was not a JSON object.");
+    return getUnavailableOptimal("The AI response was not a valid JSON object.");
   }
-  if (
-    isOptimalExecution(candidate) &&
-    candidate.available &&
-    candidate.visualizationPlan.type === candidate.visualizationType
-  ) {
-    if (
-      matchesExpectedOutput(
-        selectedExample.outputText,
-        candidate.visualizationPlan.completion.returnValue
-      ) === false
-    ) {
-      return getUnavailableOptimal(
-        "The independent trace's final result does not match the selected example's expected output."
-      );
+
+  if (candidate.available === false) {
+    const reason =
+      typeof candidate.reason === "string" && candidate.reason.trim()
+        ? candidate.reason.trim()
+        : "The model marked the independent approach unavailable without explaining why.";
+    console.warn("[AlgoLens] Optimal Execution unavailable by model decision:", reason);
+    return getUnavailableOptimal(reason);
+  }
+
+  // Remove unsafe array pointers before checking the trace contract.
+  sanitizeVisualizationPlan(candidate.visualizationPlan);
+
+  const validationIssues = getOptimalValidationIssues(candidate);
+  if (validationIssues.length > 0 || !isOptimalExecution(candidate)) {
+    if (validationIssues.length === 0) {
+      validationIssues.push("the response did not satisfy the complete optimal-execution schema");
     }
-    candidate.visualizationPlan.steps =
-      candidate.visualizationPlan.steps.slice(0, 30);
-    const { reason, ...availableOptimal } = candidate;
-    return {
-      ...availableOptimal,
-      available: true,
-      language: "language-agnostic",
-      explanation: `${candidate.explanation} ${reason}`,
-      visualizationPlan: candidate.visualizationPlan,
-    };
+    console.warn(
+      "[AlgoLens] Optimal Execution validation failures:",
+      validationIssues
+    );
+    return getUnavailableOptimal(
+      `Optimal execution rejected: ${validationIssues.join("; ")}`
+    );
   }
-  if (
-    isObject(candidate) &&
-    candidate.available === false &&
-    typeof candidate.reason === "string"
-  ) {
-    return getUnavailableOptimal(candidate.reason);
-  }
-  return getUnavailableOptimal(
-    "The independent approach did not meet confidence or trace-validation requirements."
+
+  const outputMatches = matchesExpectedOutput(
+    selectedExample.outputText,
+    candidate.visualizationPlan.completion.returnValue
   );
+  if (outputMatches === false) {
+    console.warn("[AlgoLens] Optimal Execution return value did not match the example output.", {
+      expected: selectedExample.outputText,
+      actual: candidate.visualizationPlan.completion.returnValue,
+    });
+    return getUnavailableOptimal(
+      "The independent trace's final result does not match the selected example's expected output."
+    );
+  }
+
+  candidate.visualizationPlan.steps =
+    candidate.visualizationPlan.steps.slice(0, 30);
+  const { reason, ...availableOptimal } = candidate;
+  return {
+    ...availableOptimal,
+    available: true,
+    language: "language-agnostic",
+    explanation: `${candidate.explanation} ${reason}`.trim(),
+    visualizationPlan: candidate.visualizationPlan,
+  };
 }
 
 function getOptimalExecution(problem, selectedExample, retry = false) {
@@ -526,6 +865,12 @@ function getOptimalExecution(problem, selectedExample, retry = false) {
 // Analyze the submitted implementation, then independently analyze an
 // efficient approach using only the problem and selected example.
 app.post("/analyze", async (req, res) => {
+  if (!process.env.AZURE_AI_API_KEY) {
+    return res.status(503).json({
+      error: "AZURE_AI_API_KEY is not configured in backend/.env.",
+    });
+  }
+
   const {
     code,
     language,
@@ -890,92 +1235,34 @@ ${model ? JSON.stringify(model, null, 2) : "Not provided"}
     if (!raw) {
       throw new Error("Azure AI returned an empty response.");
     }
+    console.log(`[AlgoLens] AI response received (${raw.length} characters)`);
 
-    analysis = parseModelJson(raw);
-    if (isObject(analysis)) {
-      analysis.language =
-        typeof language === "string" ? language : "unknown";
-    }
+    const modelAnalysis = parseModelJson(raw);
+    const normalizedResult = normalizeAnalysis(modelAnalysis, language);
+    analysis = normalizedResult.analysis;
 
-    // Validate algorithm analysis.
-    if (
-      typeof analysis.algorithm !== "string" ||
-      typeof analysis.variant !== "string" ||
-      typeof analysis.confidence !== "number" ||
-      !Number.isFinite(analysis.confidence) ||
-      analysis.confidence < 0 ||
-      analysis.confidence > 1 ||
-      typeof analysis.explanation !== "string" ||
-      !Array.isArray(analysis.techniques) ||
-      !analysis.techniques.every(
-        (item) => typeof item === "string"
-      ) ||
-      !Array.isArray(analysis.dataStructures) ||
-      !analysis.dataStructures.every(
-        (item) =>
-          isObject(item) &&
-          typeof item.name === "string" &&
-          typeof item.type === "string" &&
-          typeof item.role === "string"
-      ) ||
-      typeof analysis.myExecutionAvailable !== "boolean" ||
-      (
-        analysis.myExecutionUnavailableReason !== undefined &&
-        typeof analysis.myExecutionUnavailableReason !== "string"
-      ) ||
-      !isObject(analysis.complexity) ||
-      typeof analysis.complexity.time !== "string" ||
-      typeof analysis.complexity.space !== "string"
-    ) {
-      throw new Error("AI returned invalid analysis fields.");
-    }
-
-    // Validate visualization selection.
-    if (
-      typeof analysis.visualizationType !== "string" ||
-      typeof analysis.visualizationReason !== "string" ||
-      !Array.isArray(analysis.variablesToTrack) ||
-      !analysis.variablesToTrack.every(
-        (item) =>
-          isObject(item) &&
-          typeof item.name === "string" &&
-          typeof item.role === "string"
-      )
-    ) {
-      throw new Error(
-        "AI returned invalid visualization selection fields."
+    if (normalizedResult.issues.length > 0) {
+      console.warn(
+        "[AlgoLens] AI response fields normalized or defaulted:",
+        normalizedResult.issues
       );
     }
 
-    if (
-      !ALLOWED_VISUALIZATION_TYPES.has(
-        analysis.visualizationType
-      )
-    ) {
-      analysis.visualizationType = "generic";
-    }
-
-    sanitizeVisualizationPlan(analysis.visualizationPlan);
-    if (
-      analysis.myExecutionAvailable &&
-      !isVisualizationPlan(analysis.visualizationPlan)
-    ) {
-      analysis.myExecutionAvailable = false;
-      analysis.myExecutionUnavailableReason =
-        "The submitted-code trace did not pass visualization validation.";
-      delete analysis.visualizationPlan;
-    }
-
-    if (!analysis.myExecutionAvailable) {
-      delete analysis.visualizationPlan;
-      if (!analysis.myExecutionUnavailableReason) {
+    if (analysis.myExecutionAvailable) {
+      sanitizeVisualizationPlan(analysis.visualizationPlan);
+      if (!isVisualizationPlan(analysis.visualizationPlan)) {
+        analysis.myExecutionAvailable = false;
         analysis.myExecutionUnavailableReason =
-          "The submitted implementation could not be followed reliably.";
+          "The submitted-code trace did not pass visualization validation.";
+        delete analysis.visualizationPlan;
+      } else {
+        // Keep the frontend's selected type and trace type consistent.
+        analysis.visualizationType = analysis.visualizationPlan.type;
+        analysis.visualizationPlan.steps =
+          analysis.visualizationPlan.steps.slice(0, 30);
       }
     } else {
-      analysis.visualizationPlan.type = analysis.visualizationType;
-      analysis.visualizationPlan.steps =
-        analysis.visualizationPlan.steps.slice(0, 30);
+      delete analysis.visualizationPlan;
     }
     }
 
@@ -1013,7 +1300,10 @@ ${model ? JSON.stringify(model, null, 2) : "Not provided"}
     analysis.myExecutionAvailable = false;
     analysis.myExecutionUnavailableReason =
       `Submitted-code analysis failed: ${error.message}`;
-    analysis.optimalExecution = await optimalPromise;
+    analysis.optimalExecution = await optimalPromise.catch((optimalError) => {
+      console.error("[AlgoLens] Optimal analysis failed:", optimalError.message);
+      return getUnavailableOptimal(optimalError.message);
+    });
     return res.json({
       analysis,
     });
