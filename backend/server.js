@@ -753,12 +753,179 @@ Return ONLY JSON:
 }
 
 Allowed types: ${Array.from(ALLOWED_VISUALIZATION_TYPES).join(", ")}.
-Use actual input values from the example. Keep the trace to 1-30 steps. Each
-step must represent a state transition of this separately selected algorithm.
-The plan must be complete and internally consistent. Its state and step
-sequence must be independently generated; do not copy any existing trace.
-Use the normal visualization data formats for arrays, maps, sets, graphs,
-linear structures, recursion stacks, trees, and tables.
+
+OBJECTIVE:
+Generate an illustrative execution of a clean, efficient and
+well-known approach to solving the given problem.
+
+The goal is to demonstrate how a good reference solution would work.
+Do not spend effort proving mathematical optimality or finding an
+exotic or theoretically best algorithm.
+
+Choose a reasonable and commonly accepted approach that:
+- Solves the given problem correctly.
+- Has sensible time and space complexity.
+- Is easy to understand and visualize.
+- Demonstrates meaningful algorithmic steps.
+
+Do not use or analyze the user's submitted source code.
+Independently select the reference approach using only the
+problem statement, constraints and selected example.
+
+VISUALIZATION INSTRUCTIONS:
+
+1. Generate 8-12 meaningful execution steps.
+2. Use the actual input values from the selected example.
+3. Show how the algorithm progresses from initial state to final result.
+4. Keep each step concise and easy to understand.
+5. Update the visualization state logically after every operation.
+6. Highlight important indices, elements, variables and intermediate results.
+7. Avoid unnecessary or repetitive states.
+8. The final state and returnValue must represent the correct output
+   for the selected example.
+9. Do not fabricate operations or intermediate results.
+10. The trace should be understandable to a student learning algorithms.
+
+STRICT VISUALIZATION STATE SCHEMA:
+
+Every initialState and every step.state MUST be a JSON object
+containing all nine fields below.
+
+Every field MUST be an array, even when the algorithm does not use
+that particular visualization structure.
+
+1. arrays:
+   [
+     {
+       "name": "nums",
+       "values": [1, 2, 3],
+       "activeIndices": [],
+       "highlightedIndices": [],
+       "processedIndices": []
+     }
+   ]
+
+2. maps:
+   [
+     {
+       "name": "frequencyMap",
+       "entries": {}
+     }
+   ]
+
+3. sets:
+   [
+     {
+       "name": "visited",
+       "items": [],
+       "highlightedItems": []
+     }
+   ]
+
+4. graphs:
+   [
+     {
+       "name": "graph",
+       "nodes": [
+         {"id": "A", "label": "A"}
+       ],
+       "edges": [
+         {"from": "A", "to": "B"}
+       ]
+     }
+   ]
+
+5. linearStructures:
+   [
+     {
+       "name": "queue",
+       "kind": "queue",
+       "items": []
+     }
+   ]
+
+   kind MUST be exactly one of:
+   "stack", "queue", "linked_list".
+
+6. recursionStacks:
+   [
+     {
+       "name": "calls",
+       "frames": [
+         {
+           "id": "call-1",
+           "label": "solve()",
+           "variables": [
+             {"name": "n", "role": "Current input"}
+           ]
+         }
+       ]
+     }
+   ]
+
+7. trees:
+   [
+     {
+       "name": "tree",
+       "nodes": [
+         {
+           "id": "root",
+           "label": "1",
+           "leftId": null,
+           "rightId": null
+         }
+       ]
+     }
+   ]
+
+   Every non-null leftId and rightId MUST reference an
+   existing node in the same tree.
+
+8. tables:
+   [
+     {
+       "name": "dp",
+       "values": [[0, 1], [1, 2]]
+     }
+   ]
+
+9. variables:
+   [
+     {
+       "name": "index",
+       "role": "Current index"
+     }
+   ]
+
+IMPORTANT VALIDATION RULES:
+
+- Always include all nine fields in every state.
+- Use [] for unused visualization structures.
+- Never use null instead of an array.
+- Every visualization item must follow its required structure.
+- Every array index must be a valid index in its values array.
+- Every graph node must have a string id and label.
+- Every graph edge must have string from and to fields.
+- Every tree child reference must point to an existing node.
+- Every recursion frame must have a string id and label.
+- Every variable must have a string name and role.
+- Do not introduce unsupported fields or invalid data types.
+- Keep the state format consistent between initialState and all steps.
+
+TRACE COMPLETION:
+
+The visualizationPlan must contain:
+- A meaningful title.
+- A concise reason describing the chosen approach.
+- A valid initialState.
+- At least one valid execution step.
+- completion.status set to "completed".
+- completion.returnValue containing the correct example output.
+
+The visualizationType and visualizationPlan.type MUST match.
+
+Return ONLY valid JSON.
+Do not include Markdown, explanations outside JSON, or code fences.
 
 PROBLEM:
 ${JSON.stringify(problem, null, 2)}
